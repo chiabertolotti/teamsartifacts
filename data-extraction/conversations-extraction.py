@@ -8,7 +8,7 @@ import json
 from dfindexeddb.indexeddb.chromium import record
 import os
 
-def estrai_conversations(path, output_json):
+def conversations_extraction(path, output_json):
     """
     Extracts all IndexedDB records with the same database_id as the record
     with object_store_name == "conversations" and with index_id=1.
@@ -139,4 +139,4 @@ if __name__ == "__main__":
     parser.add_argument("input_path", help="IndexedDB/LevelDB file or folder")
     parser.add_argument("output_json", help="Output JSON file")
     args = parser.parse_args()
-    estrai_conversations(args.input_path, args.output_json)
+    conversations_extraction(args.input_path, args.output_json)
