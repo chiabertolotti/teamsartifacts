@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Contact: Chiara Bertolotti [bertolottichia01 <at> gmail [dot] com]
+Contact: *the contact is currently hidden*
 
 Autopsy Ingest Module – Microsoft Teams Data Visualization (from exported JSON)
 
@@ -1842,4 +1842,5 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
                         if time_val:
                             art_react.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_REACTION_TIME"], ARTIFACT_PREFIX, time_val))
                         
+
                         bb.indexArtifact(art_react)
