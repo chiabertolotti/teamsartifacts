@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Contact: *the contact is currently hidden*
+Contact: Chiara Bertolotti [bertolottichia01 <at> gmail [dot] com]
 
 Autopsy Ingest Module – Microsoft Teams Data Visualization (from exported JSON)
 
@@ -157,7 +157,11 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
     def _init_member_attributes(self, bb):
         """Initialize attributes for conversation members."""
         member_attributes = [
-            ("TSK_TEAMS_MEMBER_ID", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Members"),
+            ("TSK_TEAMS_MEMBER_ID", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Member ID"),
+            ("TSK_TEAMS_MEMBER_THREAD_ID", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Thread ID"),
+            ("TSK_TEAMS_MEMBER_ROLE", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Member Role"),
+            ("TSK_TEAMS_MEMBER_DISPLAYNAME", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Display Name"),
+            ("TSK_TEAMS_MEMBER_ISREADER", BlackboardAttribute.TSK_BLACKBOARD_ATTRIBUTE_VALUE_TYPE.STRING, "Is Reader Only"),
         ]
         
         for name, vtype, desc in member_attributes:
@@ -445,6 +449,11 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
                 self._populate_thread_artifact(art, threadId, threadType, teamId, tenantId, thread_data)
                 bb.indexArtifact(art)
                 total_threads += 1
+                
+                # Extract and create member artifacts
+                members = thread_val.get("members", {})
+                if isinstance(members, dict) and "properties" in members:
+                    self._process_thread_members(threadId, members["properties"], jsonFile, bb)
         
         return total_threads
 
@@ -464,21 +473,24 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
         
         for rec in records:
             if isinstance(rec, dict) and "value" in rec:
-                contact_data = rec["value"]
-                
-                # Extract contact information
-                mri = contact_data.get("mri", "")
-                displayName = contact_data.get("displayname", "")
-                
-                # Store in contacts map for name enrichment
-                if mri and displayName:
-                    self.contacts_map[mri] = displayName
-                
-                # Create contact artifact
-                art = jsonFile.newArtifact(self.art_contacts.getTypeID())
-                self._populate_contact_artifact(art, contact_data)
-                bb.indexArtifact(art)
-                total_contacts += 1
+                value_obj = rec.get("value", {})
+                # The actual contact data is nested in value.value
+                if isinstance(value_obj, dict) and "value" in value_obj:
+                    contact_data = value_obj["value"]
+                    
+                    # Extract contact information
+                    mri = contact_data.get("mri", "")
+                    displayName = contact_data.get("displayName", "")
+                    
+                    # Store in contacts map for name enrichment
+                    if mri and displayName:
+                        self.contacts_map[mri] = displayName
+                    
+                    # Create contact artifact
+                    art = jsonFile.newArtifact(self.art_contacts.getTypeID())
+                    self._populate_contact_artifact(art, contact_data)
+                    bb.indexArtifact(art)
+                    total_contacts += 1
         
         return total_contacts
 
@@ -610,6 +622,12 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
         delete_time_val = self._extract_timestamp_from_properties(properties, "deletetime")
         draft_time_val = self._extract_timestamp_from_properties(properties, "drafttimestamp")
         
+        # Extract client arrival time from properties (sometimes it's there instead of at top level)
+        client_arrival = msg.get("clientArrivalTime")
+        if not client_arrival and isinstance(properties, dict):
+            client_arrival = properties.get("clientarrivaltime")
+        client_arrival_ts = self._convert_timestamp(client_arrival, for_datetime_attr=True) if client_arrival else None
+        
         # Process properties and attachments
         properties_json = self._serialize_properties(properties)
         link_urls, file_min, mention_min = self._extract_props(properties if isinstance(properties, dict) else {})
@@ -641,6 +659,8 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
         # Add timestamps
         if orig_arrival_ts:
             art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_ORIG_ARRIVAL"], ARTIFACT_PREFIX, orig_arrival_ts))
+        if client_arrival_ts:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CLIENT_ARRIVAL"], ARTIFACT_PREFIX, client_arrival_ts))
         if edit_time_val:
             art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_EDIT_TIME"], ARTIFACT_PREFIX, edit_time_val))
         if compose_time_val:
@@ -1260,9 +1280,12 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
             if creator:
                 thread_data["creator"] = creator
             
-            created_at = thread_props.get("createdAt")
+            created_at = thread_props.get("createdat")
             if created_at:
-                thread_data["created_at"] = created_at
+                # Convert timestamp to readable format (as STRING, not DATETIME)
+                formatted_time = self._convert_timestamp(created_at, for_datetime_attr=False)
+                if formatted_time:
+                    thread_data["created_at"] = formatted_time
         
         # Extract draft status
         if isinstance(properties, dict):
@@ -1386,11 +1409,127 @@ class TeamsReplychainJSONParser(DataSourceIngestModule):
         art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_TENANTID"], ARTIFACT_PREFIX, tenantId if tenantId else ""))
         if threadId.endswith("@thread.tacv2") and teamId:
             art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_TEAMID"], ARTIFACT_PREFIX, teamId))
+        
+        # Add thread data attributes if available
+        if thread_data:
+            # Add topic
+            if "topic" in thread_data:
+                topic = self._safe_unicode(thread_data["topic"])
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_TOPIC"], ARTIFACT_PREFIX, topic))
+            
+            # Add description
+            if "description" in thread_data:
+                description = self._safe_unicode(thread_data["description"])
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_TOPIC_DESCRIP"], ARTIFACT_PREFIX, description))
+            
+            # Add creator
+            if "creator" in thread_data:
+                creator = self._safe_unicode(thread_data["creator"])
+                enriched_creator = self._enrich_creator_with_name(creator)
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CREATOR"], ARTIFACT_PREFIX, enriched_creator))
+            
+            # Add creation time
+            if "created_at" in thread_data:
+                created_at = self._safe_unicode(thread_data["created_at"])
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CREATEDAT"], ARTIFACT_PREFIX, created_at))
+            
+            # Add has draft status
+            if "has_draft" in thread_data:
+                has_draft = self._safe_unicode(thread_data["has_draft"])
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_HASDRAFT"], ARTIFACT_PREFIX, has_draft))
+    
+    def _process_thread_members(self, threadId, members_dict, jsonFile, bb):
+        """Extract and create artifacts for thread members.
+        
+        Args:
+            threadId: The conversation/thread ID
+            members_dict: Dictionary of member properties
+            jsonFile: File object from Autopsy
+            bb: Blackboard instance
+        """
+        if not isinstance(members_dict, dict):
+            return
+        
+        for member_key, member_data in members_dict.items():
+            if not isinstance(member_data, dict):
+                continue
+            
+            # Extract member information
+            member_id = member_data.get("id", "")
+            role = member_data.get("role", "")
+            is_reader = member_data.get("isReader", False)
+            
+            if not member_id:
+                continue
+            
+            # Create member artifact
+            art = jsonFile.newArtifact(self.art_thread_member.getTypeID())
+            
+            # Add attributes
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_MEMBER_THREAD_ID"], ARTIFACT_PREFIX, self._safe_unicode(threadId)))
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_MEMBER_ID"], ARTIFACT_PREFIX, self._safe_unicode(member_id)))
+            
+            if role:
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_MEMBER_ROLE"], ARTIFACT_PREFIX, self._safe_unicode(role)))
+            
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_MEMBER_ISREADER"], ARTIFACT_PREFIX, "True" if is_reader else "False"))
+            
+            # Enrich with display name from contacts if available
+            display_name = self.contacts_map.get(member_id, "")
+            if display_name:
+                art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_MEMBER_DISPLAYNAME"], ARTIFACT_PREFIX, self._safe_unicode(display_name)))
+            
+            bb.indexArtifact(art)
     
     def _populate_contact_artifact(self, art, contact_data):
         """Populate contact artifact with attributes."""
-        # Implementation would add all contact attributes
-        pass
+        if not isinstance(contact_data, dict):
+            return
+        
+        # Add display name
+        displayName = contact_data.get("displayName")
+        if displayName:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_DISPLAYNAME"], ARTIFACT_PREFIX, self._safe_unicode(displayName)))
+        
+        # Add email
+        email = contact_data.get("email")
+        if email:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_EMAIL"], ARTIFACT_PREFIX, self._safe_unicode(email)))
+        
+        # Add MRI (Microsoft Resource Identifier)
+        mri = contact_data.get("mri")
+        if mri:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_MRI"], ARTIFACT_PREFIX, self._safe_unicode(mri)))
+        
+        # Add tenant information
+        tenantId = contact_data.get("tenantId")
+        if tenantId:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_TENANT"], ARTIFACT_PREFIX, self._safe_unicode(tenantId)))
+        
+        # Add given name (first name)
+        givenName = contact_data.get("givenName")
+        if givenName:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_GIVEN_NAME"], ARTIFACT_PREFIX, self._safe_unicode(givenName)))
+        
+        # Add surname (last name)
+        surname = contact_data.get("surname")
+        if surname and surname.strip():  # Only add if not empty
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_SURNAME"], ARTIFACT_PREFIX, self._safe_unicode(surname)))
+        
+        # Add object ID (Azure AD)
+        objectId = contact_data.get("objectId")
+        if objectId:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_OBJECT_ID"], ARTIFACT_PREFIX, self._safe_unicode(objectId)))
+        
+        # Add user type (ADUser, BOT, Federated, etc.)
+        userType = contact_data.get("type")
+        if userType:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_USER_TYPE"], ARTIFACT_PREFIX, self._safe_unicode(userType)))
+        
+        # Add user principal name
+        upn = contact_data.get("userPrincipalName")
+        if upn:
+            art.addAttribute(BlackboardAttribute(self.attr["TSK_TEAMS_CONTACT_UPN"], ARTIFACT_PREFIX, self._safe_unicode(upn)))
     
     def _process_call_log(self, msg, conversation_id, jsonFile, bb):
         """

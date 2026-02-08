@@ -32,12 +32,12 @@ def profiles_extraction(path, output_json):
         def all_records():
             for f in files:
                 try:
-                    yield from record.IndexedDBRecord.FromFile(f)
+                    yield from record.ChromiumIndexedDBRecord.FromFile(f)
                 except Exception as e:
                     print(f"[WARN] Skipped file {f}: {e}")
         record_iter = all_records()
     else:
-        record_iter = record.IndexedDBRecord.FromFile(path)
+        record_iter = record.ChromiumIndexedDBRecord.FromFile(path)
     # First step: find all database_id for "profiles" and save the records
     database_ids = set()
     records = []
@@ -52,11 +52,11 @@ def profiles_extraction(path, output_json):
     if path.is_dir():
         for f in files:
             try:
-                save_nameskey_records(record.IndexedDBRecord.FromFile(f))
+                save_nameskey_records(record.ChromiumIndexedDBRecord.FromFile(f))
             except Exception as e:
                 print(f"[WARN] Skipped file {f}: {e}")
     else:
-        save_nameskey_records(record.IndexedDBRecord.FromFile(path))
+        save_nameskey_records(record.ChromiumIndexedDBRecord.FromFile(path))
 
     if not database_ids:
         print("No database_id found for object_store_name='profiles'")
@@ -85,11 +85,11 @@ def profiles_extraction(path, output_json):
     if path.is_dir():
         for f in files:
             try:
-                save_datakey_records(record.IndexedDBRecord.FromFile(f), str(f))
+                save_datakey_records(record.ChromiumIndexedDBRecord.FromFile(f), str(f))
             except Exception as e:
                 print(f"[WARN] Skipped file {f}: {e}")
     else:
-        save_datakey_records(record.IndexedDBRecord.FromFile(path), str(path))
+        save_datakey_records(record.ChromiumIndexedDBRecord.FromFile(path), str(path))
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2, sort_keys=True)
     print(f"Saved {len(records)} records to {output_json}")
